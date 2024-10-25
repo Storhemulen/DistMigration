@@ -1,0 +1,11 @@
+{
+    "DefaultSettings": {
+        "Domain": "example.com",
+        "ADSyncServer": "localhost",
+        "DefaultOwner": "",
+        "NonAzureSyncedOU": "OU=NonSynced,DC=example,DC=com",
+        "LogPath": "./logs",
+        "SyncTimeout": 1200,
+        "BatchSize": 100
+    }
+}
