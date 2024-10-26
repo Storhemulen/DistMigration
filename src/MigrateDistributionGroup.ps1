@@ -1,4 +1,4 @@
-# Note: ActiveDirectory module not available on Linux - see SETUP.md for alternatives
+#Requires -Modules ActiveDirectory
 #Requires -Modules ExchangeOnlineManagement
 #Requires -Modules @{ModuleName="Logging"}
 #Requires -Modules @{ModuleName="Validation"}
@@ -44,23 +44,62 @@ $batchSize = $defaultSettings.BatchSize
 
 # Main migration function
 function Start-DistributionGroupMigration {
-    Write-Log -Message "Starting migration process for group: $SourceGroupName" -Level "INFO"
+    Write-Log -Message "Starting migration process for group: $SourceGroupName" -Level "INFO" -LogPath $logPath
 
     # Write original group details to file
     $originalDetailsFilePath = ".\OriginalGroupDetails-$SourceGroupName-$(Get-Date -Format 'yyyyMMddHHmmss').txt"
     Write-GroupDetailsToFile -GroupName $SourceGroupName -FilePath $originalDetailsFilePath
 
-    # Get original group members before migration
-    $members = Get-DistributionGroupMember -Identity $SourceGroupName -ResultSize Unlimited
-    if (-not $members) {
-        Write-Log -Message "Failed to get original group members" -Level "ERROR" -LogPath $logPath
+    # Get original group details and members
+    try {
+        $originalGroup = Get-DistributionGroup -Identity $SourceGroupName -ErrorAction Stop
+        $members = Get-DistributionGroupMember -Identity $SourceGroupName -ResultSize Unlimited
+        Write-Log -Message "Retrieved $($members.Count) members from source group" -Level "INFO" -LogPath $logPath
+    }
+    catch {
+        Write-Log -Message "Failed to get original group details: $_" -Level "ERROR" -LogPath $logPath
         return
     }
-    
-    Write-Log -Message "Retrieved $($members.Count) members from source group" -Level "INFO" -LogPath $logPath
 
     if ($DryRun) {
+        Write-Log -Message "Dry run - would migrate these settings:" -Level "INFO" -LogPath $logPath
+        Write-Log -Message "Group Name: $($originalGroup.Name)" -Level "INFO" -LogPath $logPath
+        Write-Log -Message "Members Count: $($members.Count)" -Level "INFO" -LogPath $logPath
         Write-Log -Message "Dry run completed. No changes made." -Level "INFO" -LogPath $logPath
+        return
+    }
+
+    # Perform the migration
+    try {
+        # Create new distribution group in non-synced OU
+        $newGroupParams = @{
+            Name = $originalGroup.Name
+            DisplayName = $originalGroup.DisplayName
+            PrimarySmtpAddress = $originalGroup.PrimarySmtpAddress
+            Type = "Distribution"
+            OrganizationalUnit = $nonAzureSyncedOU
+        }
+        
+        Write-Log -Message "Creating new distribution group..." -Level "INFO" -LogPath $logPath
+        $newGroup = New-DistributionGroup @newGroupParams -ErrorAction Stop
+        
+        # Copy group properties
+        Set-DistributionGroup -Identity $newGroup.Name -Description $originalGroup.Description
+        
+        # Add members in batches
+        $memberCount = 0
+        foreach ($batch in $members | Select-Object -Skip $memberCount -First $batchSize) {
+            Add-DistributionGroupMember -Identity $newGroup.Name -Member $batch.PrimarySmtpAddress -ErrorAction Continue
+            $memberCount++
+            if ($memberCount % $batchSize -eq 0) {
+                Write-Log -Message "Added $memberCount members..." -Level "INFO" -LogPath $logPath
+            }
+        }
+        
+        Write-Log -Message "Migration completed successfully" -Level "INFO" -LogPath $logPath
+    }
+    catch {
+        Write-Log -Message "Error during migration: $_" -Level "ERROR" -LogPath $logPath
         return
     }
 
@@ -127,12 +166,17 @@ function Test-RequiredModule {
 if (-not (Test-RequiredModule "ActiveDirectory")) { exit }
 if (-not (Test-RequiredModule "ExchangeOnlineManagement")) { exit }
 
-# Connect to Exchange Online
+# Connect to Exchange Online and Active Directory
 try {
     Connect-ExchangeOnline -ErrorAction Stop
     Write-Log -Message "Successfully connected to Exchange Online" -Level "INFO" -LogPath $logPath
-} catch {
-    Write-Log -Message "Failed to connect to Exchange Online: $_" -Level "ERROR" -LogPath $logPath
+    
+    # Test AD connection
+    Get-ADDomain -ErrorAction Stop | Out-Null
+    Write-Log -Message "Successfully connected to Active Directory" -Level "INFO" -LogPath $logPath
+} 
+catch {
+    Write-Log -Message "Failed to connect to required services: $_" -Level "ERROR" -LogPath $logPath
     exit
 }
 
