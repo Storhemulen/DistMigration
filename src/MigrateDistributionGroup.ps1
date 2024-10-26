@@ -1,6 +1,6 @@
-#Requires -Modules ActiveDirectory
-#Requires -Modules @{ModuleName="Logging";ModuleVersion="1.0.0"}
-#Requires -Modules @{ModuleName="Validation";ModuleVersion="1.0.0"}
+#Requires -Modules ActiveDirectory, ExchangeOnlineManagement
+#Requires -Modules @{ModuleName="Logging"}
+#Requires -Modules @{ModuleName="Validation"}
 
 [CmdletBinding()]
 param(
@@ -49,7 +49,19 @@ function Start-DistributionGroupMigration {
     $originalDetailsFilePath = ".\OriginalGroupDetails-$SourceGroupName-$(Get-Date -Format 'yyyyMMddHHmmss').txt"
     Write-GroupDetailsToFile -GroupName $SourceGroupName -FilePath $originalDetailsFilePath
 
-    # Perform migration steps here...
+    # Get original group members before migration
+    $members = Get-DistributionGroupMember -Identity $SourceGroupName -ResultSize Unlimited
+    if (-not $members) {
+        Write-Log -Message "Failed to get original group members" -Level "ERROR" -LogPath $logPath
+        return
+    }
+    
+    Write-Log -Message "Retrieved $($members.Count) members from source group" -Level "INFO" -LogPath $logPath
+
+    if ($DryRun) {
+        Write-Log -Message "Dry run completed. No changes made." -Level "INFO" -LogPath $logPath
+        return
+    }
 
     # Verify migration
     try {
@@ -99,8 +111,29 @@ Members: $($members | ForEach-Object { $_.PrimarySmtpAddress } | Out-String)
     }
 }
 
+# Helper function to verify required modules
+function Test-RequiredModule {
+    param([string]$ModuleName)
+    
+    if (!(Get-Module -ListAvailable -Name $ModuleName)) {
+        Write-Log -Message "Required module '$ModuleName' is not installed." -Level "ERROR" -LogPath $logPath
+        return $false
+    }
+    return $true
+}
+
 # Main execution
-if (-not (Test-Module "ActiveDirectory")) { exit }
+if (-not (Test-RequiredModule "ActiveDirectory")) { exit }
+if (-not (Test-RequiredModule "ExchangeOnlineManagement")) { exit }
+
+# Connect to Exchange Online
+try {
+    Connect-ExchangeOnline -ErrorAction Stop
+    Write-Log -Message "Successfully connected to Exchange Online" -Level "INFO" -LogPath $logPath
+} catch {
+    Write-Log -Message "Failed to connect to Exchange Online: $_" -Level "ERROR" -LogPath $logPath
+    exit
+}
 
 try {
     Start-DistributionGroupMigration
