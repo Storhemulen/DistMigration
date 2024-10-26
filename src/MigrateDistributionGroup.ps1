@@ -1,4 +1,5 @@
-#Requires -Modules ActiveDirectory, ExchangeOnlineManagement
+# Note: ActiveDirectory module not available on Linux - see SETUP.md for alternatives
+#Requires -Modules ExchangeOnlineManagement
 #Requires -Modules @{ModuleName="Logging"}
 #Requires -Modules @{ModuleName="Validation"}
 
