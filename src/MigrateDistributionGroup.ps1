@@ -113,9 +113,12 @@ function Start-DistributionGroupMigration {
         
         # Add members in batches
         $memberCount = 0
-        foreach ($batch in $members | Select-Object -Skip $memberCount -First $batchSize) {
-            Add-DistributionGroupMember -Identity $newGroup.Name -Member $batch.PrimarySmtpAddress -ErrorAction Continue
-            $memberCount++
+        for ($i = 0; $i -lt $members.Count; $i += $batchSize) {
+            $batch = $members | Select-Object -Skip $i -First $batchSize
+            foreach ($member in $batch) {
+                Add-DistributionGroupMember -Identity $newGroup.Name -Member $member.PrimarySmtpAddress -ErrorAction Continue
+            }
+            $memberCount += $batch.Count
             if ($memberCount % $batchSize -eq 0) {
                 Write-Log -Message "Added $memberCount members..." -Level "INFO" -LogPath $logPath
             }

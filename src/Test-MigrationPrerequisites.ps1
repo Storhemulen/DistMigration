@@ -37,6 +37,17 @@ if (Test-Path $configPath) {
     $allModulesPresent = $false
 }
 
+# Test Exchange Online connectivity
+try {
+    Connect-ExchangeOnline -ErrorAction Stop
+    Get-OrganizationConfig -ErrorAction Stop | Out-Null
+    Write-Log -Message "Successfully connected to Exchange Online" -Level "INFO" -LogPath $logPath
+    Disconnect-ExchangeOnline -Confirm:$false
+} catch {
+    Write-Log -Message "Failed to connect to Exchange Online: $_" -Level "ERROR" -LogPath $logPath
+    $allModulesPresent = $false
+}
+
 if ($allModulesPresent) {
     Write-Log -Message "All prerequisites checked successfully" -Level "INFO" -LogPath $logPath
     exit 0
