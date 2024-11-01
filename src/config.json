@@ -6,6 +6,10 @@
         "NonAzureSyncedOU": "OU=NonSynced,DC=example,DC=com",
         "LogPath": "./logs",
         "SyncTimeout": 1200,
-        "BatchSize": 100
+        "BatchSize": 100,
+        "SmtpServer": "smtp.example.com",
+        "NotificationEmail": "admin@example.com",
+        "ThrottleLimit": 10,
+        "ThrottleDelayMs": 500
     }
 }

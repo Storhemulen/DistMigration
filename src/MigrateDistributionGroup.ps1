@@ -12,8 +12,16 @@ param(
     [Parameter(Mandatory=$false)]
     [string]$DefaultOwner,
 
-    [switch]$DryRun
+    [Parameter(Mandatory=$false)]
+    [string]$NotificationEmail,
+
+    [switch]$DryRun,
+    
+    [switch]$NoRollback
 )
+
+# For progress bar
+$ProgressPreference = 'Continue'
 
 # Import required modules
 Import-Module -Name "$PSScriptRoot\modules\Logging.psm1" -Force
@@ -43,6 +51,32 @@ $syncTimeout = $defaultSettings.SyncTimeout
 $batchSize = $defaultSettings.BatchSize
 
 # Main migration function
+function Start-Rollback {
+    param(
+        [string]$GroupName,
+        [string]$OriginalDetailsFile
+    )
+    
+    Write-Log -Message "Starting rollback for group: $GroupName" -Level "WARNING" -LogPath $logPath
+    
+    try {
+        # Remove the new group
+        Remove-DistributionGroup -Identity $GroupName -Confirm:$false -ErrorAction Stop
+        Write-Log -Message "Successfully removed migrated group" -Level "INFO" -LogPath $logPath
+        
+        # Log original details
+        if (Test-Path $OriginalDetailsFile) {
+            Write-Log -Message "Original group details preserved in: $OriginalDetailsFile" -Level "INFO" -LogPath $logPath
+        }
+        
+        return $true
+    }
+    catch {
+        Write-Log -Message "Failed to rollback changes: $_" -Level "ERROR" -LogPath $logPath
+        return $false
+    }
+}
+
 function Start-DistributionGroupMigration {
     Write-Log -Message "Starting migration process for group: $SourceGroupName" -Level "INFO" -LogPath $logPath
 
@@ -111,20 +145,53 @@ function Start-DistributionGroupMigration {
             Set-DistributionGroup -Identity $newGroup.Name -ManagedBy $originalGroup.ManagedBy
         }
         
-        # Add members in batches
+        # Add members in batches with throttling and progress
         $memberCount = 0
-        for ($i = 0; $i -lt $members.Count; $i += $batchSize) {
+        $totalMembers = $members.Count
+        $activity = "Migrating distribution group members"
+        
+        for ($i = 0; $i -lt $totalMembers; $i += $batchSize) {
             $batch = $members | Select-Object -Skip $i -First $batchSize
+            $batchErrors = @()
+            
             foreach ($member in $batch) {
-                Add-DistributionGroupMember -Identity $newGroup.Name -Member $member.PrimarySmtpAddress -ErrorAction Continue
+                $percentComplete = [math]::Round(($memberCount / $totalMembers) * 100)
+                Write-Progress -Activity $activity -Status "Processing member $memberCount of $totalMembers" -PercentComplete $percentComplete
+                
+                try {
+                    Add-DistributionGroupMember -Identity $newGroup.Name -Member $member.PrimarySmtpAddress -ErrorAction Stop
+                    Start-Sleep -Milliseconds $config.DefaultSettings.ThrottleDelayMs
+                }
+                catch {
+                    $batchErrors += "Failed to add member $($member.PrimarySmtpAddress): $_"
+                }
+                $memberCount++
             }
-            $memberCount += $batch.Count
-            if ($memberCount % $batchSize -eq 0) {
-                Write-Log -Message "Added $memberCount members..." -Level "INFO" -LogPath $logPath
+            
+            if ($batchErrors.Count -gt 0) {
+                Write-Log -Message "Errors in batch:" -Level "WARNING" -LogPath $logPath
+                $batchErrors | ForEach-Object { Write-Log -Message $_ -Level "WARNING" -LogPath $logPath }
+                
+                if ($batchErrors.Count -gt ($batch.Count * 0.5) -and -not $NoRollback) {
+                    Write-Log -Message "Too many errors, initiating rollback..." -Level "ERROR" -LogPath $logPath
+                    if (Start-Rollback -GroupName $newGroup.Name -OriginalDetailsFile $originalDetailsFilePath) {
+                        Send-MigrationNotification -To $NotificationEmail -GroupName $SourceGroupName -Status "Failed - Rolled Back" -ErrorDetails ($batchErrors -join "`n") -LogPath $logPath
+                        return
+                    }
+                }
             }
+            
+            Write-Log -Message "Added $memberCount of $totalMembers members..." -Level "INFO" -LogPath $logPath
         }
         
+        Write-Progress -Activity $activity -Completed
+        
         Write-Log -Message "Migration completed successfully" -Level "INFO" -LogPath $logPath
+        
+        if ($NotificationEmail -or $config.DefaultSettings.NotificationEmail) {
+            $notifyTo = $NotificationEmail ?? $config.DefaultSettings.NotificationEmail
+            Send-MigrationNotification -To $notifyTo -GroupName $SourceGroupName -Status "Completed Successfully" -LogPath $logPath
+        }
     }
     catch {
         Write-Log -Message "Error during migration: $_" -Level "ERROR" -LogPath $logPath
