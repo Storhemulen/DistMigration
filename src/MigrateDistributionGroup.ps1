@@ -71,6 +71,12 @@ function Start-DistributionGroupMigration {
 
     # Perform the migration
     try {
+        # Verify target OU exists
+        if (-not (Get-ADOrganizationalUnit -Identity $nonAzureSyncedOU)) {
+            Write-Log -Message "Target OU does not exist: $nonAzureSyncedOU" -Level "ERROR" -LogPath $logPath
+            return
+        }
+
         # Create new distribution group in non-synced OU
         $newGroupParams = @{
             Name = $originalGroup.Name
@@ -83,8 +89,27 @@ function Start-DistributionGroupMigration {
         Write-Log -Message "Creating new distribution group..." -Level "INFO" -LogPath $logPath
         $newGroup = New-DistributionGroup @newGroupParams -ErrorAction Stop
         
-        # Copy group properties
-        Set-DistributionGroup -Identity $newGroup.Name -Description $originalGroup.Description
+        # Copy group properties including aliases
+        $groupProps = @{
+            Identity = $newGroup.Name
+            Description = $originalGroup.Description
+            HiddenFromAddressListsEnabled = $originalGroup.HiddenFromAddressListsEnabled
+            MemberDepartRestriction = $originalGroup.MemberDepartRestriction
+            MemberJoinRestriction = $originalGroup.MemberJoinRestriction
+        }
+        Set-DistributionGroup @groupProps
+
+        # Copy email aliases
+        $originalGroup.EmailAddresses | Where-Object {$_ -cne $originalGroup.PrimarySmtpAddress} | ForEach-Object {
+            Set-DistributionGroup -Identity $newGroup.Name -EmailAddresses @{add=$_}
+        }
+
+        # Set owner (use DefaultOwner if specified, otherwise copy from original)
+        if ($DefaultOwner) {
+            Set-DistributionGroup -Identity $newGroup.Name -ManagedBy $DefaultOwner
+        } elseif ($originalGroup.ManagedBy) {
+            Set-DistributionGroup -Identity $newGroup.Name -ManagedBy $originalGroup.ManagedBy
+        }
         
         # Add members in batches
         $memberCount = 0
